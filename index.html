@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>FSCC v13 — Sanatorio Parque</title>
+<title>FSCC v14 — Sanatorio Parque</title>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet" />
 <style>
@@ -23,6 +23,15 @@
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
 body{font-family:var(--sans);background:var(--bg);color:var(--text);min-height:100vh;}
 
+
+/* ── TURNO WIDGET ── */
+.turno-activo-banner{background:linear-gradient(90deg,rgba(196,146,42,.12),transparent);border-left:3px solid var(--gold);padding:6px 14px;margin-bottom:10px;display:flex;align-items:center;justify-content:space-between;border-radius:0 var(--r) var(--r) 0;}
+.turno-activo-label{font-family:var(--mono);font-size:11px;font-weight:500;color:var(--gold);}
+.turno-activo-cd{font-family:var(--mono);font-size:11px;color:var(--text2);}
+.task-otro-turno{opacity:0.45;}
+.task-turno-badge{display:inline-block;font-size:9px;font-family:var(--mono);padding:1px 6px;border-radius:3px;margin-left:6px;font-weight:500;}
+.task-turno-badge.activo{background:rgba(196,146,42,.18);color:var(--amber);}
+.task-turno-badge.otro{background:var(--bg2);color:var(--text3);}
 
 /* ── SYNC INDICATOR ── */
 .offline-banner{display:none;position:fixed;bottom:0;left:0;right:0;background:#a05c10;color:#fff;font-size:12px;font-family:var(--mono);padding:6px 16px;text-align:center;z-index:9999;}
@@ -404,6 +413,10 @@ tbody td{padding:8px 10px;vertical-align:middle;}
   </div>
   <div class="hdr-right">
     <span class="hdr-date" id="headerDate"></span>
+    <div id="turnoWidget" style="display:none;font-family:var(--mono);font-size:10px;line-height:1.3;text-align:center;background:rgba(255,255,255,0.07);border:.5px solid rgba(255,255,255,0.15);border-radius:5px;padding:3px 10px;min-width:130px;">
+      <div style="color:var(--gold);font-weight:500;letter-spacing:.04em;" id="turnoNombre"></div>
+      <div id="turnoCountdown" style="color:rgba(255,255,255,0.7);font-size:9px;"></div>
+    </div>
     <span id="syncStatus" style="font-family:var(--mono);font-size:10px;color:rgba(255,255,255,0.4);min-width:110px;text-align:right;">☁ Conectando...</span>
     <span class="hdr-sector-tag" id="hdrSectorTag" style="display:none"></span>
     <span class="hdr-user">
@@ -702,13 +715,13 @@ tbody td{padding:8px 10px;vertical-align:middle;}
         <button class="btn btn-primary btn-sm" onclick="addCfgItem('tipos','newTipo')">+ Agregar</button>
       </div>
     </div>
-    <div class="config-section">
-      <h3>Turnos</h3>
-      <div class="config-list" id="cfgTurnos"></div>
-      <div class="config-add">
-        <input type="text" id="newTurno" placeholder="Nuevo turno..." onkeydown="if(event.key==='Enter')addCfgItem('turnos','newTurno')" />
-        <button class="btn btn-primary btn-sm" onclick="addCfgItem('turnos','newTurno')">+ Agregar</button>
+    <div class="config-section" style="grid-column:1/-1;">
+      <h3>⏰ Turnos y Horarios</h3>
+      <div class="info-panel" style="font-size:11px;padding:7px 10px;margin-bottom:12px;">
+        Los horarios se usan para mostrar el turno activo en tiempo real y el countdown de cierre de turno.
       </div>
+      <div id="cfgTurnosHorarios" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;"></div>
+      <div class="config-list" id="cfgTurnos" style="display:none;"></div>
     </div>
     <div class="config-section" style="grid-column:1/-1;">
       <h3>Frecuencia de vencimiento (días)</h3>
@@ -1339,7 +1352,8 @@ const DEFAULT_CFG={
     {id:'eq21',nombre:'Área de Acopio Residuos', sectores:['Área de Residuos']}
   ],
   tipos:["Limpieza diaria","Limpieza profunda","Desinfección","Control de temperatura","Mantenimiento preventivo","Control de plagas","Registro HACCP"],
-  turnos:["Mañana","Tarde","Noche"],
+  turnos:["Mañana","Tarde"],
+  turnosHorarios:{"Mañana":{inicio:"06:00",fin:"14:00",camerarosDesde:"06:30"},"Tarde":{inicio:"14:00",fin:"22:00",camerarosDesde:null}},
   frecuencias:{"Limpieza diaria":1,"Limpieza profunda":7,"Desinfección":3,"Control de temperatura":1,"Mantenimiento preventivo":30,"Control de plagas":14,"Registro HACCP":1},
   mantEmail:'',
   mantWhatsapp:'',
@@ -1435,6 +1449,101 @@ async function loadDataFromFirebase(){
     console.warn('Firebase sync error:',e);
     showSyncStatus('⚠ Sin conexión — modo local','amber');
   }
+}
+
+// ═══════════════════════════════════════════════════
+//  MÓDULO TURNOS
+// ═══════════════════════════════════════════════════
+let _turnoTimer = null;
+
+function getTurnoActual(){
+  const h = cfg && cfg.turnosHorarios ? cfg.turnosHorarios : {
+    "Mañana":{inicio:"06:00",fin:"14:00"},
+    "Tarde":{inicio:"14:00",fin:"22:00"}
+  };
+  const turnos = cfg && cfg.turnos ? cfg.turnos : ["Mañana","Tarde"];
+  const now = new Date();
+  const minNow = now.getHours()*60 + now.getMinutes();
+  for(const t of turnos){
+    const info = h[t];
+    if(!info) continue;
+    const [ih,im] = info.inicio.split(':').map(Number);
+    const [fh,fm] = info.fin.split(':').map(Number);
+    const minI = ih*60+im;
+    const minF = fh*60+fm;
+    if(minNow >= minI && minNow < minF){
+      return {nombre:t, info, minInicio:minI, minFin:minF};
+    }
+  }
+  return null;
+}
+
+function getProximoTurno(){
+  const h = cfg && cfg.turnosHorarios ? cfg.turnosHorarios : {
+    "Mañana":{inicio:"06:00",fin:"14:00"},
+    "Tarde":{inicio:"14:00",fin:"22:00"}
+  };
+  const turnos = cfg && cfg.turnos ? cfg.turnos : ["Mañana","Tarde"];
+  const now = new Date();
+  const minNow = now.getHours()*60 + now.getMinutes();
+  let proximo = null, minDiff = Infinity;
+  for(const t of turnos){
+    const info = h[t];
+    if(!info) continue;
+    const [ih,im] = info.inicio.split(':').map(Number);
+    const minI = ih*60+im;
+    let diff = minI - minNow;
+    if(diff < 0) diff += 24*60;
+    if(diff > 0 && diff < minDiff){minDiff = diff; proximo = {nombre:t, info, minInicio:minI, minDiff:diff};}
+  }
+  return proximo;
+}
+
+function formatCountdown(minutos){
+  const h = Math.floor(minutos/60);
+  const m = minutos % 60;
+  if(h > 0) return h+'h '+String(m).padStart(2,'0')+'m';
+  return m+'m';
+}
+
+function updateTurnoWidget(){
+  const widget = document.getElementById('turnoWidget');
+  const lblNombre = document.getElementById('turnoNombre');
+  const lblCd = document.getElementById('turnoCountdown');
+  if(!widget || !lblNombre || !lblCd) return;
+
+  const now = new Date();
+  const minNow = now.getHours()*60 + now.getMinutes();
+  const actual = getTurnoActual();
+
+  if(actual){
+    const restantes = actual.minFin - minNow;
+    lblNombre.textContent = '● ' + actual.nombre.toUpperCase();
+    lblCd.textContent = 'Cierra en ' + formatCountdown(restantes);
+    widget.style.display = '';
+    widget.style.borderColor = 'rgba(196,146,42,0.5)';
+  } else {
+    const prox = getProximoTurno();
+    if(prox){
+      lblNombre.textContent = '○ Próx: ' + prox.nombre.toUpperCase();
+      lblCd.textContent = 'Inicia en ' + formatCountdown(prox.minDiff);
+      widget.style.display = '';
+      widget.style.borderColor = 'rgba(255,255,255,0.12)';
+    } else {
+      widget.style.display = 'none';
+    }
+  }
+}
+
+function startTurnoTimer(){
+  if(_turnoTimer) clearInterval(_turnoTimer);
+  updateTurnoWidget();
+  _turnoTimer = setInterval(updateTurnoWidget, 30000);
+}
+
+function getTurnoActivoNombre(){
+  const t = getTurnoActual();
+  return t ? t.nombre : null;
 }
 
 function loadData(){
@@ -1732,6 +1841,7 @@ function doLogin(){
   updateBell();
   audit('Inicio de sesión','','sistema');
   setDate();
+  startTurnoTimer();
   // NO llamar saveAll() al login — evita pisar datos de Firebase con LS local
 
   // Vista inicial por rol
@@ -1792,6 +1902,28 @@ function renderMisTareas(){
     'Cubriendo: '+(currentUser.cubreSector||'Sin sector asignado'):
     'Mis tareas — '+(myS.join(', ')||'Sin sector asignado');
   document.getElementById('opTitle').textContent=title;
+
+  // Banner turno activo
+  const turnoActual = getTurnoActual();
+  let bannerHtml = '';
+  if(turnoActual){
+    const minNow = new Date().getHours()*60+new Date().getMinutes();
+    const restantes = turnoActual.minFin - minNow;
+    bannerHtml = '<div class="turno-activo-banner"><span class="turno-activo-label">● Turno '+turnoActual.nombre+' activo — '+turnoActual.info.inicio+' a '+turnoActual.info.fin+'</span><span class="turno-activo-cd">Cierra en '+formatCountdown(restantes)+'</span></div>';
+  } else {
+    const prox = getProximoTurno();
+    if(prox) bannerHtml = '<div class="turno-activo-banner" style="border-left-color:var(--text3);background:transparent;"><span class="turno-activo-label" style="color:var(--text2);">○ Sin turno activo — próximo: '+prox.nombre+' ('+prox.info.inicio+')</span><span class="turno-activo-cd">En '+formatCountdown(prox.minDiff)+'</span></div>';
+  }
+  // Insertar/actualizar banner en el opHeader
+  let existBanner = document.getElementById('turnoBanner');
+  if(!existBanner){
+    existBanner = document.createElement('div');
+    existBanner.id = 'turnoBanner';
+    const opHeader = document.getElementById('opHeader');
+    if(opHeader) opHeader.insertAdjacentElement('afterend', existBanner);
+  }
+  existBanner.innerHTML = bannerHtml;
+
   document.getElementById('opMeta').textContent=
     new Date().toLocaleDateString('es-AR',{weekday:'long',year:'numeric',month:'long',day:'numeric'})+
     ' · '+myT.length+' tarea'+(myT.length!==1?'s':'')+' asignada'+(myT.length!==1?'s':'');
@@ -1865,6 +1997,10 @@ function buildChecklistItem(t,readonly){
   if(isDone)cls+=' done';
   else if(isBlocked)cls+=' blocked';
   if(readonly)cls+=' readonly';
+  // Atenuar tareas de otro turno (si hay turno activo)
+  const turnoActivo = getTurnoActivoNombre();
+  const esOtroTurno = turnoActivo && t.turno && t.turno !== turnoActivo && !isDone;
+  if(esOtroTurno) cls+=' task-otro-turno';
 
   const prioIcon=t.prioridad==='urgente'?'🔴 ':t.prioridad==='alta'?'🟡 ':'';
   const icon=isDone?'✅':isBlocked?'🚫':t.estado==='Vencido'?'⏰':'🔲';
@@ -2957,12 +3093,49 @@ function renderEquiposConfig(){
     </div>`).join('');
 }
 
+function renderTurnosHorarios(){
+  var el = document.getElementById('cfgTurnosHorarios');
+  if(!el) return;
+  var turnos = cfg.turnos || ["Mañana","Tarde"];
+  var horarios = cfg.turnosHorarios || {};
+  var html = '';
+  turnos.forEach(function(t){
+    var h = horarios[t] || {inicio:'',fin:'',camerarosDesde:null};
+    var tId = t.replace(/\s/g,'_');
+    html += '<div style="background:var(--surface);border:.5px solid var(--border);border-radius:var(--rl);padding:12px 14px;">';
+    html += '<div style="font-family:var(--mono);font-size:11px;font-weight:600;color:var(--navy);margin-bottom:8px;text-transform:uppercase;">&#9679; Turno '+t+'</div>';
+    html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">';
+    html += '<div class="fg" style="margin:0;"><label style="font-size:11px;">Inicio</label>';
+    html += '<input type="time" id="th_inicio_'+tId+'" value="'+h.inicio+'" onchange="saveTurnoHorario(this)" data-turno="'+t+'" data-campo="inicio" /></div>';
+    html += '<div class="fg" style="margin:0;"><label style="font-size:11px;">Fin</label>';
+    html += '<input type="time" id="th_fin_'+tId+'" value="'+h.fin+'" onchange="saveTurnoHorario(this)" data-turno="'+t+'" data-campo="fin" /></div>';
+    if(h.camerarosDesde !== null && h.camerarosDesde !== undefined){
+      html += '<div class="fg" style="margin:0;grid-column:1/-1;"><label style="font-size:11px;">Camareros desde</label>';
+      html += '<input type="time" id="th_cam_'+tId+'" value="'+(h.camerarosDesde||'')+'" onchange="saveTurnoHorario(this)" data-turno="'+t+'" data-campo="camerarosDesde" /></div>';
+    }
+    html += '</div></div>';
+  });
+  el.innerHTML = html;
+}
+
+function saveTurnoHorario(inp){
+  var turno = inp.getAttribute('data-turno');
+  var campo = inp.getAttribute('data-campo');
+  var valor = inp.value || null;
+  if(!cfg.turnosHorarios) cfg.turnosHorarios = {};
+  if(!cfg.turnosHorarios[turno]) cfg.turnosHorarios[turno] = {inicio:'',fin:'',camerarosDesde:null};
+  cfg.turnosHorarios[turno][campo] = valor;
+  saveAll();
+  updateTurnoWidget();
+}
+
 function renderConfig(){
   renderUsersConfig();
   renderConfigList('sectores','cfgSectores');renderConfigList('tipos','cfgTipos');renderConfigList('turnos','cfgTurnos');
   renderEquiposConfig();
   renderFrecuencias();
   renderMantConfig();
+  renderTurnosHorarios();
 }
 
 // ── Equipo CRUD ──
@@ -3875,7 +4048,7 @@ function exportMantCSV(){
 function autoBackupJSON(){
   try {
     const backup = {
-      version: 'FSCC-v13',
+      version: 'FSCC-v14',
       fecha: new Date().toISOString(),
       generadoPor: currentUser ? currentUser.nombre : '—',
       cfg, tasks, users,
