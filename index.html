@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>FSCC v12.1 — Sanatorio Parque</title>
+<title>FSCC v13 — Sanatorio Parque</title>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet" />
 <style>
@@ -944,7 +944,7 @@ tbody td{padding:8px 10px;vertical-align:middle;}
 
 
 </main>
-<footer class="footer">FOOD SERVICE CONTROL CENTER &middot; SANATORIO PARQUE &middot; v10.0</footer>
+<footer class="footer">FOOD SERVICE CONTROL CENTER &middot; SANATORIO PARQUE &middot; v13</footer>
 </div><!-- /app-wrap -->
 
 <!-- ══ MODAL FOTO ══ -->
@@ -1276,10 +1276,16 @@ function fbUnwatchAll(){_snapListeners.forEach(u=>u());_snapListeners=[];}
 function showSyncStatus(msg,color='green'){
   let el=document.getElementById('syncStatus');
   if(!el)return;
-  el.textContent=msg;
-  el.style.color=color==='green'?'rgba(255,255,255,0.7)':'#ffcc44';
+  const ts=new Date().toLocaleTimeString('es-AR',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  el.textContent=msg+' '+ts;
+  el.style.color=color==='green'?'rgba(160,255,160,0.75)':color==='amber'?'#ffcc44':'rgba(255,255,255,0.4)';
   clearTimeout(el._t);
-  if(color==='green')el._t=setTimeout(()=>{el.textContent='☁ Sincronizado';el.style.color='rgba(255,255,255,0.4)';},3000);
+  if(color==='green'){
+    el._t=setTimeout(()=>{
+      el.textContent='☁ Sincronizado '+ts;
+      el.style.color='rgba(255,255,255,0.35)';
+    },4000);
+  }
 }
 
 // ═══════════════════════════════════════════════════
@@ -1346,58 +1352,82 @@ const DEFAULT_CFG={
 let cfg, tasks, users, auditLog, notifications, currentUser=null, editingId, cubreEditIdx=null;
 
 // ── loadData: primero LS local, luego Firebase ──
+// Flag para evitar que listeners remotos pisen un save local en curso
+let _localSaveInProgress = false;
+
 async function loadDataFromFirebase(){
   // Cancelar listeners anteriores para evitar duplicados
   fbUnwatchAll();
   try{
+    showSyncStatus('⏳ Sincronizando...','amber');
     // Carga inicial: traer todos los datos de Firebase de una vez
     const [fbUsers,fbCfg,fbTasks,fbAudit,fbNotif,fbHaccp,fbMant]=await Promise.all([
       fbLoad('fscc_users'), fbLoad('fscc_cfg'), fbLoad('fscc_tasks'),
       fbLoad('fscc_audit'), fbLoad('fscc_notif'), fbLoad('fscc_haccp'), fbLoad('fscc_mant')
     ]);
+
+    // Regla: si Firebase tiene datos, SIEMPRE ganan sobre localStorage
+    // Solo seedear si Firebase está completamente vacío (primer uso real)
+    const fbVacio = !fbTasks && !fbUsers && !fbCfg;
+
     if(fbUsers){users=fbUsers;LS.set('fscc_users',users);}
-    if(fbCfg && !window._cfgDirty){cfg=fbCfg;LS.set('fscc_cfg',cfg);}
+    if(fbCfg){cfg=fbCfg;LS.set('fscc_cfg',cfg);}
     if(fbTasks){
       tasks=fbTasks;LS.set('fscc_tasks',tasks);
-    } else {
-      // Firebase vacío: primer uso — generar tareas demo y subirlas
+    } else if(fbVacio){
+      // Firebase completamente vacío: primer uso — subir datos locales/demo
       if(!tasks||tasks.length===0){tasks=[];seedTasks();}
-      await fbSave('fscc_tasks',tasks);
-      if(!fbUsers) await fbSave('fscc_users',users);
-      if(!fbCfg)   await fbSave('fscc_cfg',cfg);
+      else{
+        // Hay datos en LS: subirlos a Firebase
+        await Promise.all([
+          fbSave('fscc_tasks',tasks),
+          fbSave('fscc_users',users),
+          fbSave('fscc_cfg',cfg)
+        ]);
+      }
     }
+    // Si fbTasks=null pero fbUsers/fbCfg existen: Firebase parcialmente poblado,
+    // no seedear — simplemente conservar tasks locales y subirlas
+    if(!fbTasks && !fbVacio && tasks && tasks.length>0){
+      await fbSave('fscc_tasks',tasks);
+    }
+
     if(fbAudit){auditLog=fbAudit;LS.set('fscc_audit',auditLog);}
     if(fbNotif){notifications=fbNotif;LS.set('fscc_notif',notifications);}
     if(fbHaccp){haccpLogs=fbHaccp;LS.set('fscc_haccp',haccpLogs);}
     if(fbMant){mantSolicitudes=fbMant;LS.set('fscc_mant',mantSolicitudes);}
+
     if(currentUser)renderAll();
     showSyncStatus('☁ Sincronizado','green');
 
     // ── Listeners en tiempo real para TODAS las colecciones críticas ──
-    // tasks: cambios de estado de tareas por cualquier dispositivo
+    // Solo actualizar si no hay un save local en curso (evita loop)
     fbWatch('fscc_tasks',(val)=>{
+      if(_localSaveInProgress)return;
       tasks=val;LS.set('fscc_tasks',tasks);
       if(currentUser)renderAll();
     });
-    // cfg: cambios de configuración (sectores, equipos, usuarios)
     fbWatch('fscc_cfg',(val)=>{
-      if(!window._cfgDirty){cfg=val;LS.set('fscc_cfg',cfg);if(currentUser)renderAll();}
+      if(_localSaveInProgress)return;
+      cfg=val;LS.set('fscc_cfg',cfg);
+      if(currentUser)renderAll();
     });
-    // users: altas/bajas/cambios de usuarios
     fbWatch('fscc_users',(val)=>{
+      if(_localSaveInProgress)return;
       users=val;LS.set('fscc_users',users);
     });
-    // notificaciones
     fbWatch('fscc_notif',(val)=>{
+      if(_localSaveInProgress)return;
       notifications=val;LS.set('fscc_notif',notifications);
       updateBell();renderNotifPanel();
     });
-    // haccp y mantenimiento
     fbWatch('fscc_haccp',(val)=>{
+      if(_localSaveInProgress)return;
       haccpLogs=val;LS.set('fscc_haccp',haccpLogs);
       if(currentUser)renderAll();
     });
     fbWatch('fscc_mant',(val)=>{
+      if(_localSaveInProgress)return;
       mantSolicitudes=val;LS.set('fscc_mant',mantSolicitudes);
       if(currentUser){updateMantBadge();renderAll();}
     });
@@ -1427,13 +1457,15 @@ function loadData(){
 }
 
 async function saveAll(){
-  window._cfgDirty = true;
   // Guardar local primero (inmediato)
   LS.set('fscc_cfg',cfg);LS.set('fscc_tasks',tasks);
   LS.set('fscc_users',users);LS.set('fscc_audit',auditLog);
   LS.set('fscc_notif',notifications);saveHaccp();saveMant();
   // Luego sincronizar con Firebase
   showSyncStatus('⏳ Guardando...','amber');
+  // Flag: bloquear listeners entrantes mientras guardamos
+  // (evita que el eco de nuestro propio save dispare un re-render)
+  _localSaveInProgress = true;
   try{
     await Promise.all([
       fbSave('fscc_cfg',cfg), fbSave('fscc_tasks',tasks),
@@ -1442,11 +1474,12 @@ async function saveAll(){
       fbSave('fscc_haccp',haccpLogs), fbSave('fscc_mant',mantSolicitudes)
     ]);
     showSyncStatus('☁ Guardado','green');
-    window._cfgDirty = false;
   }catch(e){
     showSyncStatus('⚠ Error al guardar en nube','amber');
     console.warn('saveAll Firebase error:',e);
-    window._cfgDirty = false;
+  } finally {
+    // Liberar flag con un pequeño delay para que el eco del listener pase
+    setTimeout(()=>{ _localSaveInProgress = false; }, 1500);
   }
 }
 
@@ -3842,7 +3875,7 @@ function exportMantCSV(){
 function autoBackupJSON(){
   try {
     const backup = {
-      version: 'FSCC-v12.1',
+      version: 'FSCC-v13',
       fecha: new Date().toISOString(),
       generadoPor: currentUser ? currentUser.nombre : '—',
       cfg, tasks, users,
