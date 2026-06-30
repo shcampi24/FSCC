@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>FSCC v15 — Sanatorio Parque</title>
+<title>FSCC v14 — Sanatorio Parque</title>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet" />
 <style>
@@ -1106,10 +1106,7 @@ tbody td{padding:8px 10px;vertical-align:middle;}
 <div class="modal-bg" id="modalNewUser" onclick="handleModalClick(event,'modalNewUser')">
   <div class="modal-box">
     <button class="modal-close" onclick="closeModal('modalNewUser')">✕</button>
-    <div class="modal-title" style="margin-bottom:16px;" id="nuModalTitle">Nuevo usuario</div>
-    <div id="nuEditInfo" style="display:none;background:var(--amber-bg);border:.5px solid var(--amber);border-radius:var(--r);padding:8px 12px;font-size:12px;color:var(--amber);margin-bottom:12px;">
-      Dejá la contraseña en blanco para no cambiarla.
-    </div>
+    <div class="modal-title" style="margin-bottom:16px;">Nuevo usuario</div>
     <div class="form-grid" style="margin-bottom:10px;">
       <div class="fg"><label>Nombre completo</label><input type="text" id="nuNombre" placeholder="Ej: Maxi García" /></div>
       <div class="fg"><label>Usuario (login)</label><input type="text" id="nuUser" placeholder="Ej: maxi" /></div>
@@ -1138,7 +1135,7 @@ tbody td{padding:8px 10px;vertical-align:middle;}
     </div>
     <div class="form-actions">
       <button class="btn btn-ghost" onclick="closeModal('modalNewUser')">Cancelar</button>
-      <button class="btn btn-primary" id="nuSaveBtn" onclick="saveUserModal()">Crear usuario</button>
+      <button class="btn btn-primary" onclick="saveNewUser()">Crear usuario</button>
     </div>
   </div>
 </div>
@@ -1729,6 +1726,23 @@ function pushNotif(tipo, titulo, detalle, taskId){
   renderNotifPanel();
 }
 
+function pushNotifMant(titulo, detalle, mantId){
+  // Notificación de respuesta de Mantenimiento → solo supervisor (no al admin que la generó)
+  const notif={
+    id:Date.now()+Math.random(),
+    tipo:'mant_respuesta', titulo, detalle, taskId:null, mantId,
+    ts:nowISO(),
+    leida:false,
+    targets:['supervisor']
+  };
+  notifications.unshift(notif);
+  if(notifications.length>100)notifications=notifications.slice(0,100);
+  LS.set('fscc_notif',notifications);
+  fbSave('fscc_notif',notifications).catch(()=>{});
+  updateBell();
+  renderNotifPanel();
+}
+
 function getMyNotifs(){
   if(!currentUser)return[];
   if(currentUser.rol==='admin'||currentUser.rol==='supervisor'){
@@ -1757,8 +1771,8 @@ function renderNotifPanel(){
   const mine=getMyNotifs();
   if(!mine.length){el.innerHTML='<div class="notif-empty">Sin notificaciones.</div>';return;}
   el.innerHTML=mine.map(n=>{
-    const dotCls=n.tipo==='completed'?'green':n.tipo==='incident'?'red':'';
-    const icon=n.tipo==='completed'?'✅':n.tipo==='incident'?'⚠️':'🔔';
+    const dotCls=n.tipo==='completed'?'green':n.tipo==='incident'?'red':n.tipo==='mant_respuesta'?'blue':'';
+    const icon=n.tipo==='completed'?'✅':n.tipo==='incident'?'⚠️':n.tipo==='mant_respuesta'?'🔧':'🔔';
     return`<div class="notif-item${n.leida?'':' unread'}" onclick="markNotifRead('${n.id}')">
       <div class="notif-dot ${dotCls}"></div>
       <div class="notif-item-body">
@@ -1774,6 +1788,11 @@ function markNotifRead(id){
   const n=notifications.find(x=>String(x.id)===String(id));
   if(n)n.leida=true;
   saveAll();updateBell();renderNotifPanel();
+  if(n && n.tipo==='mant_respuesta'){
+    toggleNotifPanel({stopPropagation:()=>{}});
+    const tab=document.getElementById('tabMant');
+    if(tab) switchView('mantenimiento', tab);
+  }
 }
 
 function clearAllNotifs(){
@@ -2447,8 +2466,6 @@ function renderUsersConfig(){
       <span style="font-family:var(--mono);font-size:11px;color:var(--text3)">@${u.user}</span>
       <span class="badge ${rolBadge}">${u.rol}</span>
       ${svNote}${sectorInfo}${cubreInfo}${sectorBtn}
-      <button class="btn btn-ghost btn-sm" onclick="openEditUserModal(${i})">Editar</button>
-      <button class="btn btn-ghost btn-sm" onclick="resetPass(${i})">🔑 Reset clave</button>
       ${u.user!=='admin'?`<button class="btn btn-danger btn-sm" onclick="removeUser(${i})">Eliminar</button>`:'<span style="font-size:10px;color:var(--text3)">protegido</span>'}
     </div>`;
   }).join('');
@@ -2460,15 +2477,7 @@ function toggleUserFields(){
   document.getElementById('nuCubreWrap').style.display=rol==='cubre'?'':'none';
 }
 
-// ── índice del usuario que se edita; null = modo nuevo ──
-let _userEditIdx = null;
-
 function openNewUserModal(){
-  _userEditIdx = null;
-  document.getElementById('nuModalTitle').textContent = 'Nuevo usuario';
-  document.getElementById('nuSaveBtn').textContent = 'Crear usuario';
-  document.getElementById('nuEditInfo').style.display = 'none';
-  document.getElementById('nuUser').removeAttribute('disabled');
   document.getElementById('nuNombre').value='';document.getElementById('nuUser').value='';
   document.getElementById('nuPass').value='';document.getElementById('nuRol').value='operario';
   populateSel('nuSector',cfg.sectores);populateSel('nuCubreSector',cfg.sectores);
@@ -2490,62 +2499,6 @@ function saveNewUser(){
   users.push(nu);
   audit(`Usuario creado: ${nombre} (@${user})`,`rol: ${rol}`,'usuario');
   saveAll();renderUsersConfig();closeModal('modalNewUser');
-}
-
-function openEditUserModal(i){
-  const u = users[i];
-  if(!u) return;
-  _userEditIdx = i;
-  document.getElementById('nuModalTitle').textContent = 'Editar usuario';
-  document.getElementById('nuSaveBtn').textContent = 'Guardar cambios';
-  document.getElementById('nuEditInfo').style.display = '';
-  document.getElementById('nuNombre').value = u.nombre;
-  document.getElementById('nuUser').value = u.user;
-  document.getElementById('nuUser').setAttribute('disabled','true');
-  document.getElementById('nuPass').value = '';
-  document.getElementById('nuRol').value = u.rol;
-  populateSel('nuSector', cfg.sectores);
-  populateSel('nuCubreSector', cfg.sectores);
-  toggleUserFields();
-  if(u.rol==='operario' && u.sectores && u.sectores.length){
-    document.getElementById('nuSector').value = u.sectores[0];
-  }
-  if(u.rol==='cubre' && u.cubreSector){
-    document.getElementById('nuCubreSector').value = u.cubreSector;
-  }
-  document.getElementById('modalNewUser').classList.add('open');
-}
-
-function saveUserModal(){
-  if(_userEditIdx === null){ saveNewUser(); return; }
-  // Modo edición
-  const u = users[_userEditIdx];
-  if(!u) return;
-  const nombre = document.getElementById('nuNombre').value.trim();
-  const pass   = document.getElementById('nuPass').value;
-  const rol    = document.getElementById('nuRol').value;
-  if(!nombre){ alert('Ingresá el nombre.'); return; }
-  if(pass && pass.length < 4){ alert('La contraseña debe tener al menos 4 caracteres.'); return; }
-  const cambios = [];
-  if(u.nombre !== nombre){ cambios.push('nombre'); u.nombre = nombre; }
-  if(pass){ cambios.push('contraseña'); u.pass = pass; }
-  if(u.rol !== rol){ cambios.push('rol'); u.rol = rol; }
-  if(rol==='operario'){ u.sectores = [document.getElementById('nuSector').value]; }
-  if(rol==='cubre'){ u.cubreSector = document.getElementById('nuCubreSector').value; }
-  audit('Usuario editado: @'+u.user, cambios.join(', '), 'usuario');
-  saveAll(); renderUsersConfig(); closeModal('modalNewUser');
-}
-
-function resetPass(i){
-  const u = users[i];
-  if(!u) return;
-  const nueva = prompt('Nueva contraseña para ' + u.nombre + ' (@' + u.user + '):\n(mínimo 4 caracteres)');
-  if(nueva === null) return;
-  if(nueva.length < 4){ alert('Mínimo 4 caracteres.'); return; }
-  u.pass = nueva;
-  audit('Contraseña reseteada: @'+u.user, '', 'usuario');
-  saveAll(); renderUsersConfig();
-  alert('Contraseña actualizada. El usuario puede ingresar con la nueva clave.');
 }
 
 function removeUser(i){
@@ -4075,13 +4028,22 @@ function enviarEmail(){
 function saveMantEstado(){
   const idx = mantSolicitudes.findIndex(x => x.id === mantEditId);
   if(idx < 0) return;
-  mantSolicitudes[idx].estado = document.getElementById('mantAdminEstado').value;
+  const estadoAnterior = mantSolicitudes[idx].estado;
+  const nuevoEstado = document.getElementById('mantAdminEstado').value;
+  mantSolicitudes[idx].estado = nuevoEstado;
   mantSolicitudes[idx].nroTicket = document.getElementById('mantNroTicket').value.trim();
   saveMant();
   closeModal('modalMantAdmin');
   renderMant();
   updateMantBadge();
   audit(`Ticket mant. actualizado: ${mantSolicitudes[idx].sector}`, `Estado: ${mantSolicitudes[idx].estado} · Ticket: ${mantSolicitudes[idx].nroTicket||'—'}`, 'sistema');
+  // Notificar al supervisor si hubo cambio de estado
+  if(estadoAnterior !== nuevoEstado){
+    const estadoLabels = {pendiente:'Pendiente', en_proceso:'En proceso', resuelto:'Resuelto', cancelado:'Cancelado'};
+    pushNotifMant('🔧 Respuesta de Mantenimiento',
+      `${mantSolicitudes[idx].sector}: ${mantSolicitudes[idx].tipo} → ${estadoLabels[nuevoEstado]||nuevoEstado}`,
+      mantSolicitudes[idx].id);
+  }
 }
 
 // ── Config de Mantenimiento ──────────────────────────
@@ -4117,7 +4079,7 @@ function exportMantCSV(){
 function autoBackupJSON(){
   try {
     const backup = {
-      version: 'FSCC-v15',
+      version: 'FSCC-v14',
       fecha: new Date().toISOString(),
       generadoPor: currentUser ? currentUser.nombre : '—',
       cfg, tasks, users,
