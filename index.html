@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>FSCC v18 — Sanatorio Parque</title>
+<title>FSCC v19 — Sanatorio Parque</title>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet" />
 <style>
@@ -29,6 +29,7 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);min-height:1
 .turno-activo-label{font-family:var(--mono);font-size:11px;font-weight:500;color:var(--gold);}
 .turno-activo-cd{font-family:var(--mono);font-size:11px;color:var(--text2);}
 .task-otro-turno{opacity:0.45;}
+.task-arrastrada{border-left:3px solid var(--red);background:rgba(176,32,32,0.04);}
 .task-turno-badge{display:inline-block;font-size:9px;font-family:var(--mono);padding:1px 6px;border-radius:3px;margin-left:6px;font-weight:500;}
 .task-turno-badge.activo{background:rgba(196,146,42,.18);color:var(--amber);}
 .task-turno-badge.otro{background:var(--bg2);color:var(--text3);}
@@ -1414,6 +1415,9 @@ async function loadDataFromFirebase(){
     if(currentUser)renderAll();
     showSyncStatus('☁ Sincronizado','green');
 
+    // ── Generación diaria de tareas (solo después de tener datos frescos de Firebase) ──
+    chequearGeneracionDiaria();
+
     // ── Listeners en tiempo real para TODAS las colecciones críticas ──
     // Solo actualizar si no hay un save local en curso (evita loop)
     fbWatch('fscc_tasks',(val)=>{
@@ -1546,6 +1550,129 @@ function getTurnoActivoNombre(){
   return t ? t.nombre : null;
 }
 
+// ═══════════════════════════════════════════════════
+//  MOTOR DE GENERACIÓN DIARIA DE TAREAS
+// ═══════════════════════════════════════════════════
+// Clave única lógica de una tarea recurrente: equipoId + tipo
+function tareaKey(equipoId, tipo){ return equipoId + '__' + tipo; }
+
+function generarTareasDelDia(){
+  const t = today();
+  if(!cfg || !cfg.equipos || !cfg.equipos.length) return; // sin config, no hay nada que generar
+
+  // Mapa de la última tarea conocida por cada (equipo+tipo), para heredar responsable/sector
+  const ultimaPorKey = {};
+  tasks.forEach(tk=>{
+    if(!tk.equipoId || !tk.tipo) return;
+    const k = tareaKey(tk.equipoId, tk.tipo);
+    if(!ultimaPorKey[k] || tk.fechaReg > ultimaPorKey[k].fechaReg){
+      ultimaPorKey[k] = tk;
+    }
+  });
+
+  // Tipos de tarea por equipo (mismo criterio que seedTasks original)
+  const tiposPorEquipo={
+    'eq1':['Limpieza diaria','Control de temperatura','Registro HACCP'],
+    'eq2':['Limpieza diaria','Limpieza profunda'],
+    'eq3':['Limpieza profunda','Desinfección'],
+    'eq4':['Limpieza profunda','Control de plagas'],
+    'eq5':['Limpieza diaria','Desinfección'],
+    'eq6':['Limpieza diaria','Desinfección'],
+    'eq7':['Limpieza diaria','Mantenimiento preventivo'],
+    'eq8':['Limpieza diaria','Desinfección'],
+    'eq13':['Limpieza diaria','Control de temperatura'],
+    'eq16':['Control de temperatura','Registro HACCP','Limpieza profunda'],
+    'eq17':['Control de temperatura','Registro HACCP'],
+    'eq18':['Control de temperatura','Registro HACCP'],
+    'eq19':['Limpieza diaria','Control de plagas'],
+    'eq20':['Limpieza diaria','Desinfección'],
+  };
+
+  let generadas = 0;
+  let ctr = 0;
+
+  cfg.equipos.forEach(eq=>{
+    // Si el equipo no está en el mapa fijo, usar los tipos que ya tenga registrados en tasks (equipos agregados manualmente)
+    let tipos = tiposPorEquipo[eq.id];
+    if(!tipos){
+      tipos = [...new Set(tasks.filter(tk=>tk.equipoId===eq.id).map(tk=>tk.tipo))];
+      if(!tipos.length) tipos = ['Limpieza diaria'];
+    }
+    const sector = eq.sectores ? eq.sectores[0] : (tipos.length ? '' : '');
+
+    tipos.forEach(tipo=>{
+      const k = tareaKey(eq.id, tipo);
+      // ¿Ya existe una tarea de HOY para esta clave? → no duplicar
+      const yaHoy = tasks.find(tk=>tk.equipoId===eq.id && tk.tipo===tipo && tk.fechaReg===t);
+      if(yaHoy) return;
+
+      const dias = (cfg.frecuencias && cfg.frecuencias[tipo]) || 1;
+      const ultima = ultimaPorKey[k];
+
+      // Definir si corresponde generar hoy:
+      // - Frecuencia diaria (1): siempre se genera (si no realizada ayer, se "arrastra" con motivo visible)
+      // - Frecuencia >1: solo cuando venció (fechaVenc <= hoy) o nunca existió
+      let corresponde = false;
+      if(!ultima){
+        corresponde = true; // nunca se generó, primera vez
+      } else if(dias <= 1){
+        corresponde = true; // diaria: todos los días
+      } else if(ultima.fechaVenc && ultima.fechaVenc <= t){
+        corresponde = true; // venció su frecuencia
+      }
+      if(!corresponde) return;
+
+      const sectorFinal = ultima ? ultima.sector : (eq.sectores ? eq.sectores[0] : '');
+      const responsableFinal = ultima ? ultima.responsable : '—';
+
+      // Si la tarea anterior quedó "No realizada", guardamos el antecedente visible
+      let obsHeredada = '';
+      if(ultima && ultima.estado === 'No realizada' && ultima.incidencia){
+        obsHeredada = `Pendiente desde ${fmtDate(ultima.fechaReg)} — motivo: ${ultima.incidencia.motivo}${ultima.incidencia.desc?': '+ultima.incidencia.desc:''}`;
+      }
+
+      tasks.push({
+        id: Date.now()+(ctr++)+Math.random(),
+        sector: sectorFinal,
+        equipo: eq.nombre,
+        equipoId: eq.id,
+        tipo,
+        responsable: responsableFinal,
+        turno: ultima ? ultima.turno : (cfg.turnos?cfg.turnos[0]:''),
+        estado: 'Pendiente',
+        prioridad: obsHeredada ? 'alta' : 'normal',
+        asignadoPor: 'Sistema',
+        fechaReg: t,
+        fechaVenc: addDays(t, dias),
+        horaRegistro: null,
+        obs: obsHeredada,
+        foto: '',
+        arrastrada: !!obsHeredada
+      });
+      generadas++;
+    });
+  });
+
+  if(generadas > 0){
+    audit(`Generación automática de tareas`, `${generadas} tarea(s) creadas para ${fmtDate(t)}`, 'sistema');
+    LS.set('fscc_ultimaGeneracion', t);
+  }
+  return generadas;
+}
+
+function chequearGeneracionDiaria(){
+  const t = today();
+  const ultima = LS.get('fscc_ultimaGeneracion');
+  if(ultima === t) return; // ya se generó hoy en este dispositivo
+  const n = generarTareasDelDia();
+  if(n > 0){
+    saveAll();
+    if(currentUser) renderAll();
+  } else {
+    LS.set('fscc_ultimaGeneracion', t);
+  }
+}
+
 function loadData(){
   // Cargar desde localStorage primero (instantáneo, para no bloquear UI)
   users        = LS.get('fscc_users')  || JSON.parse(JSON.stringify(DEFAULT_USERS));
@@ -1651,6 +1778,7 @@ function resetData(){
   if(!confirm('Restablecer todos los datos de ejemplo? Se perderán los datos actuales.'))return;
   audit('Datos restablecidos','','sistema');
   cfg=JSON.parse(JSON.stringify(DEFAULT_CFG));tasks=[];notifications=[];
+  LS.set('fscc_ultimaGeneracion', null);
   seedTasks();saveAll();renderAll();renderConfig();updateBell();
 }
 
@@ -2040,6 +2168,7 @@ function buildChecklistItem(t,readonly){
   const turnoActivo = getTurnoActivoNombre();
   const esOtroTurno = turnoActivo && t.turno && t.turno !== turnoActivo && !isDone;
   if(esOtroTurno) cls+=' task-otro-turno';
+  if(t.arrastrada && !isDone) cls+=' task-arrastrada';
 
   const prioIcon=t.prioridad==='urgente'?'🔴 ':t.prioridad==='alta'?'🟡 ':'';
   const icon=isDone?'✅':isBlocked?'🚫':t.estado==='Vencido'?'⏰':'🔲';
@@ -2061,9 +2190,9 @@ function buildChecklistItem(t,readonly){
   return`<div class="${cls}" id="ck-${t.id}">
     <div class="checklist-item-icon">${icon}</div>
     <div class="checklist-item-body">
-      <div class="checklist-item-title">${prioIcon}${t.tipo} ${equipoTag}</div>
+      <div class="checklist-item-title">${prioIcon}${t.arrastrada&&!isDone?'⏮ ':''}${t.tipo} ${equipoTag}</div>
       <div class="checklist-item-meta">${t.turno} · Vence: ${fmtDate(t.fechaVenc)}${horaLine}${t.hechoPor?' · '+t.hechoPor:''}${asignadoLine}</div>
-      ${t.obs?`<div style="font-size:11px;color:var(--text2);margin-top:2px;font-style:italic;">"${t.obs}"</div>`:''}
+      ${t.obs?`<div style="font-size:11px;color:${t.arrastrada&&!isDone?'var(--red)':'var(--text2)'};margin-top:2px;font-style:italic;">"${t.obs}"</div>`:''}
       ${isDone&&t.foto?`<img src="${t.foto}" class="foto-thumb" style="margin-top:6px;" onclick="openFotoModal(${t.id})" />`:''}
       ${incidLine}
     </div>
@@ -4240,7 +4369,7 @@ function exportMantCSV(){
 function autoBackupJSON(){
   try {
     const backup = {
-      version: 'FSCC-v18',
+      version: 'FSCC-v19',
       fecha: new Date().toISOString(),
       generadoPor: currentUser ? currentUser.nombre : '—',
       cfg, tasks, users,
