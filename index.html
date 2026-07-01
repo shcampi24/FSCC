@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>FSCC v22 — Sanatorio Parque</title>
+<title>FSCC v23 — Sanatorio Parque</title>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet" />
 <style>
@@ -445,6 +445,7 @@ tbody td{padding:8px 10px;vertical-align:middle;}
 <nav class="nav-tabs" id="navTabs">
   <!-- Visible para todos -->
   <button class="nav-tab active" id="tabMisTareas" onclick="switchView('mis-tareas',this)">Mis Tareas</button>
+  <button class="nav-tab" id="tabCapacitaciones" onclick="switchView('capacitaciones',this)">📚 Capacitaciones</button>
   <!-- Solo supervisor y admin -->
   <button class="nav-tab sv-admin-only" id="tabSupervisor" onclick="switchView('supervisor',this)">Supervisión</button>
   <!-- Solo admin -->
@@ -482,6 +483,25 @@ tbody td{padding:8px 10px;vertical-align:middle;}
     <div class="checklist-section-title">Otros sectores (referencia)</div>
     <div id="otherSectorsList"></div>
   </div>
+</div>
+
+<!-- ══ VISTA: CAPACITACIONES ══ -->
+<div class="view" id="view-capacitaciones">
+  <div class="op-header" id="capHeader">
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
+      <div>
+        <h2>📚 Capacitaciones</h2>
+        <div class="op-meta" id="capMeta">Registro de capacitaciones del personal</div>
+      </div>
+      <div id="capAdminBtns" style="display:none;gap:8px;display:flex;">
+        <select class="flt" id="capFiltroOperario" onchange="renderCapacitaciones()">
+          <option value="">Todos los operarios</option>
+        </select>
+        <button class="btn btn-primary" onclick="openNuevaCapacitacion()">+ Nueva capacitación</button>
+      </div>
+    </div>
+  </div>
+  <div id="capListado" style="margin-top:1rem;"></div>
 </div>
 
 <!-- ══ VISTA: SUPERVISIÓN ══ -->
@@ -1461,6 +1481,11 @@ async function loadDataFromFirebase(){
     if(fbHaccp){haccpLogs=fbHaccp;LS.set('fscc_haccp',haccpLogs);}
     if(fbMant){mantSolicitudes=fbMant;LS.set('fscc_mant',mantSolicitudes);}
 
+    // Capacitaciones
+    const fbCap = await fbLoad('fscc_cap');
+    if(fbCap){capacitaciones=fbCap;LS.set('fscc_cap',capacitaciones);}
+    else{loadCapacitaciones();}
+
     if(currentUser)renderAll();
     showSyncStatus('☁ Sincronizado','green');
 
@@ -1497,6 +1522,11 @@ async function loadDataFromFirebase(){
       if(_localSaveInProgress)return;
       mantSolicitudes=val;LS.set('fscc_mant',mantSolicitudes);
       if(currentUser){updateMantBadge();renderAll();}
+    });
+    fbWatch('fscc_cap',(val)=>{
+      if(_localSaveInProgress)return;
+      capacitaciones=val||[];LS.set('fscc_cap',capacitaciones);
+      if(currentUser && document.getElementById('view-capacitaciones').classList.contains('active')) renderCapacitaciones();
     });
   }catch(e){
     console.warn('Firebase sync error:',e);
@@ -4669,7 +4699,7 @@ function exportMantCSV(){
 function autoBackupJSON(){
   try {
     const backup = {
-      version: 'FSCC-v22',
+      version: 'FSCC-v23',
       fecha: new Date().toISOString(),
       generadoPor: currentUser ? currentUser.nombre : '—',
       cfg, tasks, users,
@@ -4850,6 +4880,193 @@ function exportHistOperarioCSV(){
 // ═══════════════════════════════════════════════════
 //  NAVIGATION
 // ═══════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════
+//  MÓDULO CAPACITACIONES
+// ═══════════════════════════════════════════════════
+let capacitaciones = [];
+
+function loadCapacitaciones(){
+  capacitaciones = LS.get('fscc_cap') || [];
+}
+
+function saveCapacitaciones(){
+  LS.set('fscc_cap', capacitaciones);
+  fbSave('fscc_cap', capacitaciones).catch(()=>{});
+}
+
+function renderCapacitaciones(){
+  const esSvAdmin = currentUser && (currentUser.rol==='admin'||currentUser.rol==='supervisor');
+
+  // Mostrar/ocultar botones de admin
+  const adminBtns = document.getElementById('capAdminBtns');
+  if(adminBtns) adminBtns.style.display = esSvAdmin ? 'flex' : 'none';
+
+  // Llenar filtro de operarios
+  const filtroOp = document.getElementById('capFiltroOperario');
+  if(filtroOp && esSvAdmin){
+    const ops = users.filter(u=>u.rol==='operario'||u.rol==='cubre');
+    filtroOp.innerHTML = '<option value="">Todos los operarios</option>' +
+      ops.map(u=>`<option value="${u.nombre}">${u.nombre}</option>`).join('');
+  }
+
+  // Filtrar capacitaciones
+  let caps = [...capacitaciones];
+  if(!esSvAdmin && currentUser){
+    caps = caps.filter(c=>c.operario===currentUser.nombre);
+  } else if(esSvAdmin && filtroOp && filtroOp.value){
+    caps = caps.filter(c=>c.operario===filtroOp.value);
+  }
+
+  caps.sort((a,b)=>b.fecha.localeCompare(a.fecha));
+
+  const listado = document.getElementById('capListado');
+  if(!listado) return;
+
+  if(!caps.length){
+    listado.innerHTML = '<div style="text-align:center;padding:3rem;color:var(--text3);font-size:13px;">'+
+      (esSvAdmin ? 'No hay capacitaciones registradas aún. Hacé click en "+ Nueva capacitación" para agregar.' :
+       'Todavía no tenés capacitaciones registradas.')+'</div>';
+    return;
+  }
+
+  // Agrupar por operario
+  const porOp = {};
+  caps.forEach(c=>{
+    if(!porOp[c.operario]) porOp[c.operario]=[];
+    porOp[c.operario].push(c);
+  });
+
+  listado.innerHTML = Object.keys(porOp).map(op=>{
+    const lista = porOp[op];
+    const rows = lista.map(c=>{
+      const tieneArchivo = c.archivoData && c.archivoData.length > 0;
+      const esPDF = c.archivoTipo && c.archivoTipo.includes('pdf');
+      let archivoBtn = '';
+      if(tieneArchivo){
+        if(esPDF){
+          archivoBtn = `<button class="btn btn-ghost btn-sm" style="font-size:10px;" onclick="verArchivoCap('${c.id}')">📄 Ver PDF</button>`;
+        } else {
+          archivoBtn = `<button class="btn btn-ghost btn-sm" style="font-size:10px;" onclick="verArchivoCap('${c.id}')">🖼 Ver imagen</button>`;
+        }
+      }
+      const deleteBtn = esSvAdmin ? `<button class="btn btn-ghost btn-sm" style="font-size:10px;color:var(--red);" onclick="eliminarCapacitacion('${c.id}')">🗑</button>` : '';
+      return `<div style="background:var(--surface);border:.5px solid var(--border);border-radius:var(--r);padding:12px 14px;margin-bottom:8px;">
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;flex-wrap:wrap;">
+          <div style="flex:1;min-width:0;">
+            <div style="font-weight:600;font-size:13px;color:var(--navy);">${c.tema}</div>
+            <div style="font-size:11px;color:var(--text2);margin-top:2px;">
+              📅 ${fmtDate(c.fecha)}
+              ${c.instructor?' · 👤 '+c.instructor:''}
+              ${c.duracion?' · ⏱ '+c.duracion:''}
+            </div>
+            ${c.descripcion?`<div style="font-size:12px;color:var(--text1);margin-top:6px;font-style:italic;">${c.descripcion}</div>`:''}
+          </div>
+          <div style="display:flex;gap:4px;flex-shrink:0;">
+            ${archivoBtn}
+            ${deleteBtn}
+          </div>
+        </div>
+      </div>`;
+    }).join('');
+
+    return `<div style="margin-bottom:1.5rem;">
+      <div style="font-family:var(--mono);font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;display:flex;align-items:center;gap:8px;">
+        <span>👤 ${op}</span>
+        <span style="color:var(--gold);">(${lista.length} capacitación${lista.length!==1?'es':''})</span>
+      </div>
+      ${rows}
+    </div>`;
+  }).join('');
+}
+
+function openNuevaCapacitacion(){
+  const ops = users.filter(u=>u.rol==='operario'||u.rol==='cubre');
+  const selOp = document.getElementById('capOperario');
+  selOp.innerHTML = ops.map(u=>`<option value="${u.nombre}">${u.nombre}</option>`).join('');
+  document.getElementById('capFecha').value = today();
+  document.getElementById('capTema').value = '';
+  document.getElementById('capInstructor').value = '';
+  document.getElementById('capDuracion').value = '';
+  document.getElementById('capDescripcion').value = '';
+  document.getElementById('capArchivoData').value = '';
+  document.getElementById('capArchivoNombre').textContent = '';
+  document.getElementById('capArchivo').value = '';
+  document.getElementById('modalNuevaCap').classList.add('open');
+}
+
+function capArchivoChange(inp){
+  const file = inp.files[0];
+  if(!file) return;
+  if(file.size > 2*1024*1024){
+    alert('El archivo no puede superar 2MB. Comprimí el PDF o la imagen antes de subir.');
+    inp.value=''; return;
+  }
+  const reader = new FileReader();
+  reader.onload = e=>{
+    document.getElementById('capArchivoData').value = e.target.result;
+    document.getElementById('capArchivoNombre').textContent = '✓ ' + file.name + ' (' + (file.size/1024).toFixed(0) + ' KB)';
+    document.getElementById('capArchivoNombre').style.color = 'var(--green)';
+  };
+  reader.onerror = ()=>{ alert('No se pudo leer el archivo.'); };
+  reader.readAsDataURL(file);
+}
+
+function guardarCapacitacion(){
+  const operario = document.getElementById('capOperario').value;
+  const fecha = document.getElementById('capFecha').value;
+  const tema = document.getElementById('capTema').value.trim();
+  const instructor = document.getElementById('capInstructor').value.trim();
+  const duracion = document.getElementById('capDuracion').value.trim();
+  const descripcion = document.getElementById('capDescripcion').value.trim();
+  const archivoData = document.getElementById('capArchivoData').value;
+  const archivoInput = document.getElementById('capArchivo');
+  const archivoTipo = archivoInput.files[0] ? archivoInput.files[0].type : '';
+  const archivoNombre = archivoInput.files[0] ? archivoInput.files[0].name : '';
+
+  if(!operario){ alert('Seleccioná un operario.'); return; }
+  if(!fecha){ alert('Ingresá la fecha.'); return; }
+  if(!tema){ alert('Ingresá el tema de la capacitación.'); return; }
+
+  const cap = {
+    id: Date.now()+Math.random(),
+    operario, fecha, tema, instructor, duracion, descripcion,
+    archivoData, archivoTipo, archivoNombre,
+    cargadoPor: currentUser.nombre,
+    ts: nowISO()
+  };
+  capacitaciones.unshift(cap);
+  saveCapacitaciones();
+  audit(`Capacitación registrada: ${operario}`, `${tema} — ${fecha}`, 'sistema');
+  closeModal('modalNuevaCap');
+  renderCapacitaciones();
+}
+
+function verArchivoCap(id){
+  const c = capacitaciones.find(x=>String(x.id)===String(id));
+  if(!c || !c.archivoData) return;
+  const w = window.open('','_blank');
+  if(!w){ alert('El navegador bloqueó la ventana. Habilitá pop-ups.'); return; }
+  if(c.archivoTipo && c.archivoTipo.includes('pdf')){
+    w.document.write(`<html><body style="margin:0;padding:0;">
+      <embed src="${c.archivoData}" type="application/pdf" width="100%" height="100%" />
+    </body></html>`);
+  } else {
+    w.document.write(`<html><body style="margin:0;background:#000;display:flex;align-items:center;justify-content:center;min-height:100vh;">
+      <img src="${c.archivoData}" style="max-width:100%;max-height:100vh;object-fit:contain;" />
+    </body></html>`);
+  }
+}
+
+function eliminarCapacitacion(id){
+  const c = capacitaciones.find(x=>String(x.id)===String(id));
+  if(!c) return;
+  if(!confirm(`¿Eliminar la capacitación "${c.tema}" de ${c.operario}?`)) return;
+  capacitaciones = capacitaciones.filter(x=>String(x.id)!==String(id));
+  saveCapacitaciones();
+  audit(`Capacitación eliminada: ${c.operario}`, c.tema, 'sistema');
+  renderCapacitaciones();
+}
+
 function switchView(v,btn){
   document.querySelectorAll('.view').forEach(el=>el.classList.remove('active'));
   document.querySelectorAll('.nav-tab').forEach(el=>el.classList.remove('active'));
@@ -4863,6 +5080,7 @@ function switchView(v,btn){
   if(v==='dashboard'){renderMetrics();renderBars();renderAlert();renderTable();}
   if(v==='haccp'){renderHaccpActive();}
   if(v==='mantenimiento'){renderMant();}
+  if(v==='capacitaciones'){renderCapacitaciones();}
 }
 
 function switchViewById(v){
@@ -4962,6 +5180,32 @@ loadData();
       <button class="btn btn-ghost" onclick="closeModal('modalReporteOperario')">Cancelar</button>
       <button class="btn btn-outline" onclick="generarReporteOperario('print')">🖨 Imprimir / PDF</button>
       <button class="btn btn-primary" onclick="generarReporteOperario('download')">⬇ Descargar</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══ MODAL NUEVA CAPACITACIÓN ══ -->
+<div class="modal-bg" id="modalNuevaCap" onclick="handleModalClick(event,'modalNuevaCap')">
+  <div class="modal-box">
+    <button class="modal-close" onclick="closeModal('modalNuevaCap')">✕</button>
+    <div class="modal-title" id="capModalTitle">Nueva capacitación</div>
+    <div class="form-grid" style="margin:14px 0;">
+      <div class="fg"><label>Operario</label><select id="capOperario"></select></div>
+      <div class="fg"><label>Fecha</label><input type="date" id="capFecha" /></div>
+      <div class="fg"><label>Tema / Título</label><input type="text" id="capTema" placeholder="Ej: Manipulación de alimentos" /></div>
+      <div class="fg"><label>Instructor / Dictado por</label><input type="text" id="capInstructor" placeholder="Ej: Lic. García" /></div>
+      <div class="fg"><label>Duración</label><input type="text" id="capDuracion" placeholder="Ej: 2 horas" /></div>
+      <div class="fg" style="grid-column:1/-1;"><label>Descripción / Contenido</label><textarea id="capDescripcion" rows="3" placeholder="Describí los temas tratados en la capacitación..." style="width:100%;resize:vertical;font-family:var(--font-sans);font-size:13px;padding:8px;border:.5px solid var(--border);border-radius:var(--r);background:var(--surface);color:var(--text1);"></textarea></div>
+      <div class="fg" style="grid-column:1/-1;">
+        <label>Certificado / Archivo <span style="font-size:10px;color:var(--text3)">(PDF o imagen, opcional)</span></label>
+        <input type="file" id="capArchivo" accept=".pdf,image/*" onchange="capArchivoChange(this)" style="font-size:12px;" />
+        <div id="capArchivoNombre" style="font-size:11px;color:var(--text2);margin-top:4px;"></div>
+        <input type="hidden" id="capArchivoData" />
+      </div>
+    </div>
+    <div class="form-actions">
+      <button class="btn btn-ghost" onclick="closeModal('modalNuevaCap')">Cancelar</button>
+      <button class="btn btn-primary" onclick="guardarCapacitacion()">Guardar capacitación</button>
     </div>
   </div>
 </div>
