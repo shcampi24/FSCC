@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>FSCC v20 — Sanatorio Parque</title>
+<title>FSCC v21 — Sanatorio Parque</title>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet" />
 <style>
@@ -1970,6 +1970,7 @@ document.addEventListener('click',()=>{
 // ═══════════════════════════════════════════════════
 const EMAILJS_SERVICE  = 'service_9tir3yc';
 const EMAILJS_TEMPLATE = 'template_wuf6b4q';
+const EMAILJS_TEMPLATE_BIENVENIDA = 'template_f5ofbno';
 const EMAILJS_PUBKEY   = 'E2woiSQjVkUGQBsrp';
 
 function generarPassAleatoria(){
@@ -2049,6 +2050,23 @@ function mostrarRecupMsg(texto, tipo){
   msg.style.background = tipo==='ok'?'#e8f5ee':tipo==='error'?'#fde8e8':'#fff8e0';
   msg.style.color = tipo==='ok'?'#1a7a4a':tipo==='error'?'#b02020':'#a05c10';
   msg.style.border = tipo==='ok'?'1px solid #a8dbb8':tipo==='error'?'1px solid #f0b8b8':'1px solid #f0d880';
+}
+
+async function enviarMailBienvenida(u, pass){
+  if(!u.email) return; // sin mail no se envía
+  try{
+    emailjs.init(EMAILJS_PUBKEY);
+    await emailjs.send(EMAILJS_SERVICE, EMAILJS_TEMPLATE_BIENVENIDA, {
+      to_email: u.email,
+      nombre:   u.nombre,
+      usuario:  u.user,
+      pass:     pass,
+    });
+    console.log('Mail de bienvenida enviado a', u.email);
+  }catch(e){
+    console.warn('No se pudo enviar mail de bienvenida:', e);
+    // No bloquear la creación del usuario si falla el mail
+  }
 }
 
 function doLogin(){
@@ -2802,6 +2820,8 @@ function saveNewUser(){
   users.push(nu);
   audit(`Usuario creado: ${nombre} (@${user})`,`rol: ${rol}`,'usuario');
   saveAll();renderUsersConfig();closeModal('modalNewUser');
+  // Enviar mail de bienvenida si tiene email cargado
+  if(nu.email) enviarMailBienvenida(nu, pass);
 }
 
 function removeUser(i){
@@ -4523,7 +4543,7 @@ function exportMantCSV(){
 function autoBackupJSON(){
   try {
     const backup = {
-      version: 'FSCC-v20',
+      version: 'FSCC-v21',
       fecha: new Date().toISOString(),
       generadoPor: currentUser ? currentUser.nombre : '—',
       cfg, tasks, users,
